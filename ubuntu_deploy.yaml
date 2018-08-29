@@ -1,0 +1,501 @@
+---
+- hosts: cloud
+  become: true
+  become_method: sudo
+  vars:   
+    # Fill in the FQDN name and IP address (contoso.rpplabs.com or 10.1.10.185 for example)
+    server_name: "{{inventory_hostname}}" #"{{ lookup('file', 'server_name') }}"
+    # Set to False to diable SSL and access the server over HTTP instead
+    #enable_ssl: "True"
+    # Set to False to diable mount additional volume for mysql
+    #mount_custom_mysql_volume: "True"
+    # If you install server in local network keep this variable in state - hostname: '{{ansible_hostname}}'
+    #hostname: '{{ansible_hostname}}'
+    #net_iface: '{{ansible_default_ipv4.interface}}'
+    #If you want to give the server a "hostname" and server have FQDN (local_network_server: "False"). Uncomment the string below (without points in name) and comment "hostname" above:
+    #hostname: 'YOURHOSTNAME' 
+    #If you are setting up server which will be located on local network set this parameter to "True"
+    #local_network_server: "False"
+
+  tasks:
+
+  #----------------------------------------------------------------------------
+  # PREAMBLE
+  #
+  # This playbook deploys the RTLSv1 software onto a fresh CentOS 7 install.
+  # The procedure is based on the rtls-bootstrap gitlab project
+  #----------------------------------------------------------------------------
+
+  - name: Set hostname
+    hostname: name='{{hostname}}'
+
+  - name: Create motd
+    template: src="motd/motd.j2" dest="/etc/motd"
+
+#  - name: Add IP address to console prompt
+#    lineinfile:
+#      path: /etc/issue
+      # This mess of a line inserts the correct interface IP into the prompt
+      # The ugly bracketing is needed to escape the literal { and } needed for the
+      # variable in /etc/issue
+#      line: "IP Address: \\4{{ '{' }}{{net_iface}}{{ '}' }}"
+#    when: local_network_server == "True"
+
+  - name: Add repositories
+#    copy: src=ubuntu_deploy/configs/repos/{{ item }} dest=/etc/yum.repos.d/{{ item }} force=no
+#    with_items:
+#      - epel.repo
+#      - mariadb10.1.repo
+#      - nodesource-el.repo
+#      - rpplabs.repo
+#      - rpplabs-updates.repo
+#      - rpplabs-testing-updates.repo
+#      - nginx.repo
+    - apt_repository:
+        repo: ppa:nginx/stable
+
+  - name: Upgrade all packages
+    yum:
+      name: '*'
+      state: latest
+      exclude: nodejs
+
+  - name: install curl and libcurl from the rpplabs repo
+    yum:
+      name: '{{ item }}'
+      enablerepo: rpplabs
+      state: present
+    with_items:
+        - curl
+        - libcurl
+
+  - name: Ensure presence of base packages
+    # These are packages installed on the AWS Centos 7 AMI that this script
+    # expects to have installed for successful deployment
+    yum:
+      name: '{{ item }}'
+      state: present
+    with_items:
+        - audit-libs-python
+        - checkpolicy
+        - chrony
+        - dracut-config-generic
+        - gssproxy
+        - keyutils
+        - libsemanage-python
+        - libyaml
+        - net-tools
+        - patch
+        - patchutils
+        - policycoreutils-python
+        - python-babel
+        - python-chardet
+        - python-IPy
+        - python-jinja2
+        - python-jsonpatch
+        - python-jsonpointer
+        - python-kitchen
+        - python-markupsafe
+        - python-prettytable
+        - python-requests
+        - python-setuptools
+        - python-six
+        - python-urllib3
+        - PyYAML
+        - rpcbind
+        - rsync
+        - setools-libs
+        - tcp_wrappers
+        - yum-utils
+        - util-linux
+        - cairo
+        - cairo-devel
+        - libjpeg-turbo-devel
+        - pango
+        - pango-devel
+        - giflib-devel
+
+  - name: Ensure presence of base packages
+    # This block used when we install server with local network
+    yum:
+      name: '{{ item }}'
+      state: present
+    with_items:
+        - avahi-dnsconfd
+        - openvpn
+    when: local_network_server == "True"
+
+  - name: Install RTLS dependent packages from epel or base repo
+    yum:
+      name: '{{ item }}'
+      enablerepo: epel
+      state: present
+      disable_gpg_check: yes
+      update_cache: yes
+    with_items:
+        - passwd
+        - cairo
+        - pango
+        - MySQL-python
+        - jq
+        - net-tools
+        - sudo
+        - zeromq
+        - ImageMagick
+        - czmq
+        - libconfig
+        - systemd-sysv
+        - iptables-services
+        - mc
+        - wget
+        - vim
+        - nodejs-6.11.4-1nodesource.x86_64
+    become: yes
+
+  - name: Install nginx fron nginx repo
+    yum:
+      name: 'nginx'
+      enablerepo: nginx
+      state: present
+      disable_gpg_check: yes
+      update_cache: yes
+    become: yes
+
+  - name: remove the ntp package
+    yum:
+      name: ntp
+      state: absent
+
+  - name: Configuring the Amazon Time Sync Service (http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/set-time.html)
+    block:
+      - name: edit chrony.conf
+        blockinfile:
+          path: /etc/chrony.conf
+          insertbefore: BOF
+          block: |
+            server 169.254.169.123 prefer iburst
+      - name: restart chrony service
+        service:
+          name: chronyd
+          state: restarted
+
+  - name: mount mysql volume
+    block:
+      - name: install xfsprogs
+        action: yum pkg=xfsprogs state=latest
+
+      - name: format new volume
+        filesystem: fstype=xfs dev=/dev/xvdb
+
+      - name: edit fstab and mount the vol
+        action: mount name=/var/lib/mysql src=/dev/xvdb opts=noatime fstype=xfs state=mounted
+    when: mount_custom_mysql_volume == "True"
+
+  - name: Install SSL certs
+    block:
+      - copy: src=v2_deploy/certs/{{ item }} dest=/etc/pki/tls/certs/{{ item }}
+        with_items:
+          - STAR_rpplabs_com.chained.crt
+          - STAR_rpplabs_com.ca-bundle
+      - copy: src=v2_deploy/certs/wildcard.rpplabs.com.key dest=/etc/pki/tls/private/wildcard.rpplabs.com.key
+    when: enable_ssl == "True"
+
+  - name: Install packages from mariadb10.1 repo
+    yum:
+      name: '{{ item }}'
+      enablerepo: mariadb10.1
+      state: present
+      disable_gpg_check: yes
+      update_cache: yes
+    with_items:
+        - MariaDB-client
+        - MariaDB-common
+        - MariaDB-devel
+        - MariaDB-server
+        - MariaDB-shared
+        - galera
+    become: yes
+
+  - name: Create rtls group
+    group: name=rtls state=present
+
+  - name: Add default rtls user
+    user:
+      name: rtls
+      comment: "RTLS User"
+      group: rtls
+      groups: wheel,dialout
+      append: yes
+      shell: /bin/bash
+      generate_ssh_key: yes
+      home: /home/rtls
+      # Use jinja2 filter to hash the password
+      password: "{{ 'dr2demo' | password_hash('sha512') }}"
+      # Only do this on first run, do not change password on successive runs
+      update_password: on_create
+
+  - name: Deploy authorized_keys file
+    copy:
+      src: v2_deploy/configs/authorized_keys
+      dest: /home/rtls/.ssh/authorized_keys
+      owner: rtls
+      group: rtls
+      mode: 0600
+
+  - name: Generate SSH key for root
+    user: name=root generate_ssh_key=yes
+
+  - name: Configure database
+    block:
+      - name: Start mysql
+        service: name=mysql state=started enabled=yes
+
+      - name: Generate mysql root password
+        mysql_user:
+          login_user: root
+          #use when the script rerun (comment out the string "password" below)
+          #login_password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+          name: root
+          host: localhost
+          password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+
+      - name: Write .my.cnf
+        template:
+          src: v2_deploy/configs/database/mycnf.j2
+          dest: /root/.my.cnf
+          owner: root
+          group: root
+          mode: 0600
+
+      - name: Secure MySQL
+        block:
+          - mysql_user:
+              name: ''
+              host_all: yes
+              state: absent
+              login_user: root
+              login_password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+          - mysql_db:
+              name: test
+              state: absent
+              login_user: root
+              login_password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+
+      - name: Configure MySQL
+        blockinfile:
+          path: /etc/my.cnf
+          block: |
+            [mysqld]
+            event_scheduler = on
+            max_connections = 200
+
+      - name: Create dr2_test and dr2_prod databases
+        block:
+          - mysql_db:
+              name: dr2_test
+              encoding: utf8
+              state: present
+              login_user: root
+              login_password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+          - mysql_db:
+              name: dr2_prod
+              encoding: utf8
+              state: present
+              login_user: root
+              login_password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+
+      - name: Grant privileges
+        mysql_user:
+          login_user: root
+          login_password: "{{ lookup('password', 'mysql_root_pwd length=32') }}"
+          name: dr2_prod
+          host: localhost
+          password: "{{ lookup('password', 'mysql_production_pwd length=32') }}"
+          priv: '*.*:ALL,GRANT'
+
+      - name: Set up database JSON file
+        template:
+          src: v2_deploy/configs/database/database-template.json.j2
+          dest: /home/rtls/database.json
+          owner: rtls
+          group: rtls
+          mode: 0644
+
+  - name: Tweak console
+    block:
+      - file: path=/etc/profile.d/colorls.sh state=touch
+      - lineinfile: path=/etc/profile.d/colorls.sh line={{ item }}
+        with_items:
+          - "alias ll='ls -l ' 2>/dev/null"
+          - "alias l.='ls -d .* ' 2>/dev/null"
+          - "alias ls='ls -F' 2>/dev/null"
+
+  - name: Configure shell environments for root and rtls
+    block:
+      - copy:
+          src: v2_deploy/configs/user_aliases
+          dest: /root/.aliases
+          owner: root
+          group: root
+      - copy:
+          src: v2_deploy/configs/user_bashrc
+          dest: /root/.bashrc
+          owner: root
+          group: root
+      - copy:
+          src: v2_deploy/configs/user_aliases
+          dest: /home/rtls/.aliases
+          owner: rtls
+          group: rtls
+      - copy:
+          src: v2_deploy/configs/user_bashrc
+          dest: /home/rtls/.bashrc
+          owner: rtls
+          group: rtls
+      # Remove aliases from .bash_profile
+      - lineinfile: path={{ item }} regexp="^alias.*" state=absent
+        with_items:
+          - /root/.bash_profile
+          - /home/rtls/.bash_profile
+
+  - name: Configure firewall
+    block:
+      - name: Check for firewalld and disable
+        service: name=firewalld enabled=no state=stopped
+        # If firewalld is not present, don't abort playbook
+        ignore_errors: true
+      - template: src=v2_deploy/iptables.j2 dest=/etc/sysconfig/iptables
+      - template: src=v2_deploy/ip6tables.j2 dest=/etc/sysconfig/ip6tables
+
+  - name: Allow port 5353/udp for Avahi mDNS on local servers
+    block:
+      - lineinfile:
+          path: /etc/sysconfig/iptables
+          insertbefore: '^-A IN_drop -j IN_drop_log'
+          line: '-A INPUT_direct -p udp -m multiport --dports 5353 -m comment --comment "Allow avahi mdns service" -j ACCEPT'
+      - lineinfile:
+          path: /etc/sysconfig/ip6tables
+          insertbefore: '^-A IN_drop -j IN_drop_log'
+          line: '-A INPUT_direct -p udp -m multiport --dports 5353 -m comment --comment "Allow avahi mdns service" -j ACCEPT'
+    when: local_network_server == "True"
+
+  - name: Configure mDNS in /etc/nsswitch.conf
+    lineinfile:
+      path: /etc/nsswitch.conf
+      regexp: '^hosts'
+      insertafter: '^#hosts'
+      line: 'hosts:      files mdns_minimal [NOTFOUND=return] dns myhostname'
+    when: local_network_server == "True"
+
+  - name: Deploy OpenVPN configuration for local servers
+    template:
+      src: v2_deploy/configs/devkit.redpointpositioning.com.conf.j2
+      dest: /etc/openvpn/client/devkit.redpointpositioning.com.conf
+    when: local_network_server == "True"
+
+  - name: Enable OpenVPN service
+    service: name=openvpn-client@devkit.redpointpositioning.com enabled=yes
+    when: local_network_server == "True"
+    
+  - name: Install RTLS software
+    yum:
+      name: '{{ item }}'
+      enablerepo: rpplabs
+      state: present
+      disable_gpg_check: yes
+      update_cache: yes
+    with_items:
+      - rtls-zone-detector
+      - rtls-gateway
+      - rtls-message-processor
+      - rtls-param-observer
+      - rtls-pub-sub-proxyd
+      - rtls-ws-stream
+      - rtls-frontend
+      - rtls-monitor-agent
+      - rtls-ul-tdoa-pe
+
+    become: yes
+
+  - name: chown "/etc/rtls" and "/var/run/rtls" folders for rtls-message-processor package
+    block:
+    - name: create "/etc/rtls" directory
+      file:
+        path: /etc/rtls
+        state: directory
+        owner: rtls
+        group: rtls
+        mode: 0755
+    - name: chown files in "/etc/rtls" folder
+      file:
+        path: /etc/rtls
+        state: directory
+        owner: rtls
+        group: rtls
+        recurse: yes
+    - name: create "/var/run/rtls" folder
+      file:
+        path: /var/run/rtls
+        state: directory
+        owner: rtls
+        group: rtls
+        mode: 0755
+        recurse: yes
+
+  - name: Change rtls-frontend running user
+    blockinfile:
+      path: /usr/lib/systemd/system/rtls-frontend.service
+      insertafter: "^Restart"
+      block: |
+        User=rtls
+        Group=rtls
+
+  - name: Reload systemd daemon
+    systemd: daemon_reload=yes
+
+  - name: Deploy nginx config
+    template: src=v2_deploy/configs/nginx/nginx-nossl.conf.j2 dest=/etc/nginx/nginx.conf
+    when: enable_ssl == "False"
+
+  - name: Deploy nginx SSL config
+    template: src=v2_deploy/configs/nginx/nginx-ssl.conf.j2 dest=/etc/nginx/nginx.conf
+    when: enable_ssl == "True"
+     
+  - name: Engage services
+    service: name={{ item }} enabled=yes
+    with_items:
+      - mysql
+      - nginx
+      - iptables
+      - ip6tables
+      - rtls-zone-detector
+      - rtls-gateway
+      - rtls-message-processor
+      - rtls-param-observer
+      - rtls-pub-sub-proxyd
+      - rtls-ws-stream
+      - rtls-monitor-agent
+      - rtls-frontend
+      - rtls-ul-tdoa-pe
+
+  - name: Deploy server-config.json
+    template:
+      src: v2_deploy/configs/server-config.json.j2
+      dest: /home/rtls/rtls-frontend/server-config.json
+      owner: rtls
+      group: rtls
+    when: local_network_server == "False"
+
+  - name: Deploy server-config.json when server which will be located on local network
+    template:
+      src: v2_deploy/configs/server-config.json_internal_server.j2
+      dest: /home/rtls/rtls-frontend/server-config.json
+      owner: rtls
+      group: rtls
+    when: local_network_server == "True"
+
+  - name: Reboot server
+    command: /sbin/shutdown -r +1
+    async: 0
+    poll: 0
+    ignore_errors: true
