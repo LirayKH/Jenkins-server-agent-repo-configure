@@ -4,7 +4,7 @@ pipeline {
         stage('Build') {
             agent {
                 docker {
-                    image 'rpplabs/stack-builder-centos-7:0.4.0'
+                    image 'jenkins/ssh-agent:alpine'
                     // Run the container on the node specified at the
                     // top-level of the Pipeline, in the same workspace,
                     // rather than on a new node entirely:
@@ -12,7 +12,8 @@ pipeline {
                 }
             }
             steps {
-                sh 'lsb_release -d'
+                // sh 'lsb_release -d'
+                sh 'cat /etc/alpine-release '
             }
         }
     }
