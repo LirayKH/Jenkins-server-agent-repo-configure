@@ -13,6 +13,7 @@ pipeline {
             }
             steps {
                 // sh 'lsb_release -d'
+		sh "chmod +x -R ${env.WORKSPACE}"
                 sh 'cat /etc/alpine-release '
             }
         }
