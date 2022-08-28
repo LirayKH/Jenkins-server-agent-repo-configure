@@ -3,7 +3,7 @@ pipeline {
     agent {
         docker {
             // image 'jenkins/ssh-agent:alpine'
-            image 'alpine/git'
+            image 'ghcr.io/rpplabs/stack-builder-centos-7:0.4.0'
             args '-it --entrypoint=/bin/bash'
             label 'agent-remote'
                     // Run the container on the node specified at the
