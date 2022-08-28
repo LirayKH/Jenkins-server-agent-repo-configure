@@ -3,7 +3,7 @@ pipeline {
     agent {
         docker {
             // image 'jenkins/ssh-agent:alpine'
-            image 'docker pull ubuntu:latest'
+            image 'ubuntu:latest'
             // args '-it --entrypoint=/bin/bash'
             label 'agent-remote'
                     // Run the container on the node specified at the
