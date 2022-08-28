@@ -4,6 +4,7 @@ pipeline {
         stage('Build') {
             agent {
                 docker {
+                    label 'agent-remote'
                     image 'jenkins/ssh-agent:alpine'
                     // Run the container on the node specified at the
                     // top-level of the Pipeline, in the same workspace,
@@ -13,7 +14,7 @@ pipeline {
             }
             steps {
                 // sh 'lsb_release -d'
-		sh "chmod +x -R ${env.WORKSPACE}"
+		//sh "chmod +x -R ${env.WORKSPACE}"
                 sh 'cat /etc/alpine-release '
             }
         }
